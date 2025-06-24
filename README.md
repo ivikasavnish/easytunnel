@@ -1,53 +1,377 @@
 # Easy SSH Tunnel Manager
 
-A modern, web-based SSH tunnel manager that allows you to easily create, manage, and monitor multiple SSH tunnels simultaneously. Perfect for developers who need to access multiple remote services through bastion hosts or jump servers.
+A modern web-based SSH tunnel manager that allows you to manage multiple SSH tunnels with automatic reconnection, real-time monitoring, and a beautiful web interface.
 
-![Easy SSH Tunnel Manager](https://img.shields.io/badge/Go-1.23+-blue.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Easy SSH Tunnel Manager](https://img.shields.io/badge/Go-v1.21+-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
-## 🚀 Features
+## ✨ Features
 
-- **Multi-Tunnel Management**: Run multiple SSH tunnels simultaneously
-- **Web Interface**: Clean, modern web UI for easy management
-- **Auto-Reconnection**: Automatic reconnection when tunnels fail
-- **Real-time Updates**: Live status updates via Server-Sent Events (SSE)
-- **Network Monitoring**: Automatic detection of network connectivity issues
-- **Desktop Notifications**: System notifications for tunnel status changes
-- **Port Auto-Detection**: Automatically extracts local ports from SSH commands
-- **Health Monitoring**: Regular health checks for active tunnels
-- **Persistent Configuration**: Tunnel configurations saved between sessions
+- **🔄 Auto-Reconnection**: Tunnels automatically reconnect when network connectivity is restored
+- **📊 Real-time Monitoring**: Live status updates via Server-Sent Events (SSE)
+- **🌐 Network Detection**: Automatic network connectivity monitoring
+- **🔔 Desktop Notifications**: Browser notifications for tunnel status changes
+- **💻 Modern Web UI**: Clean, responsive interface built with Tailwind CSS
+- **⚡ Lightweight**: Single binary with embedded web interface
+- **🛡️ Secure**: Supports SSH key authentication and various SSH options
+- **📝 Command Parsing**: Automatically detects local ports from SSH commands
+- **🔧 Health Monitoring**: Regular health checks for all tunnels
 
-## 📋 Prerequisites
+## 📋 Requirements
 
-- **Go 1.23+** - Required to build and run the application
-- **SSH Client** - The `ssh` command must be available in your system PATH
-- **Network Access** - Ability to connect to your SSH servers/bastion hosts
-- **Modern Web Browser** - Chrome, Firefox, Safari, or Edge for the web interface
+- **Go 1.21 or higher** (for building from source)
+- **SSH client** installed on your system
+- **SSH key authentication** set up for your bastion hosts
+- **Web browser** with JavaScript enabled
 
-## 🛠️ Installation
+## 🚀 Quick Start
 
-### Option 1: Build from Source
+### Option 1: Run from Source
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/ivikasavnish/easytunnel.git
+   git clone <repository-url>
    cd easytunnel
    ```
 
-2. **Build the application:**
+2. **Build and run:**
    ```bash
-   go build -o easytunnel main.go
+   go mod tidy
+   go run .
    ```
 
-3. **Run the application:**
+3. **Or build binary:**
    ```bash
-   ./easytunnel
+   go build -o tunnel-manager .
+   ./tunnel-manager
    ```
 
-### Option 2: Direct Go Install
+4. **Access the web interface:**
+   Open http://localhost:8080 in your browser
+
+### Option 2: Custom Port
 
 ```bash
-go install github.com/ivikasavnish/easytunnel@latest
+PORT=9999 go run .
+# or
+PORT=9999 ./tunnel-manager
+```
+
+### Option 3: Running with sudo (if needed)
+
+```bash
+sudo PORT=10001 go run .
+```
+
+## � Usage Guide
+
+### Adding Tunnels
+
+1. **Open the web interface** at http://localhost:8080
+2. **Fill out the form:**
+   - **Tunnel Name**: A descriptive name (e.g., "Production DB")
+   - **SSH Command**: Your complete SSH command with port forwarding
+   - **Local Port**: (Optional) Leave empty for auto-detection
+
+3. **Example SSH commands:**
+   ```bash
+   ssh -L 5432:db.internal:5432 user@bastion.example.com
+   ssh -L 8080:app.internal:8080 -i ~/.ssh/my-key user@jump.example.com
+   ssh -L 3306:mysql.internal:3306 -p 2222 user@bastion.example.com
+   ```
+
+4. **Click "Add Tunnel"** and the tunnel will start automatically
+
+### Managing Tunnels
+
+- **Start/Stop**: Use the toggle button next to each tunnel
+- **Delete**: Click the delete button (confirmation required)
+- **Monitor Status**: Real-time status updates with color-coded indicators
+- **View Errors**: Error messages displayed in red boxes when issues occur
+
+### Tunnel Statuses
+
+- 🟢 **Connected**: Tunnel is active and healthy
+- 🟡 **Connecting**: Tunnel is attempting to connect
+- 🔴 **Error**: Connection failed or tunnel encountered an issue
+- ⚪ **Disconnected**: Tunnel is stopped
+
+## 🔧 Configuration
+
+### SSH Key Setup
+
+Ensure your SSH keys are properly configured:
+
+```bash
+# Generate SSH key if you don't have one
+ssh-keygen -t ed25519 -C "your-email@example.com"
+
+# Copy public key to bastion host
+ssh-copy-id user@bastion.example.com
+
+# Test connection
+ssh user@bastion.example.com
+```
+
+### SSH Config File
+
+For easier management, add hosts to your `~/.ssh/config`:
+
+```bash
+Host bastion
+    HostName bastion.example.com
+    User your-username
+    IdentityFile ~/.ssh/id_ed25519
+    ServerAliveInterval 30
+    ServerAliveCountMax 3
+```
+
+Then use simplified commands:
+```bash
+ssh -L 5432:db.internal:5432 bastion
+```
+
+## 🛠️ Troubleshooting
+
+### Common Issues
+
+#### 1. **Rapid Reconnection Loop** ⚠️ CRITICAL
+**Symptoms:** Logs show constant "connecting" messages every second
+```
+2025/06/24 14:36:27 Connecting tunnel 'localdb' without automatic key management
+2025/06/24 14:36:28 Tunnel 'localdb' connected successfully on port 5433
+2025/06/24 14:36:28 Connecting tunnel 'localdb' without automatic key management
+```
+
+**🚨 IMMEDIATE ACTIONS:**
+1. **Stop the application immediately:**
+   ```bash
+   # Press Ctrl+C (might need to press multiple times)
+   # If unresponsive, force kill from another terminal:
+   pkill -f "go run"
+   # or find the process and kill it:
+   ps aux | grep easytunnel
+   sudo kill -9 <PID>
+   ```
+
+2. **Clean up orphaned SSH processes:**
+   ```bash
+   # Find and kill any stuck SSH tunnels
+   ps aux | grep "ssh.*-L"
+   pkill -f "ssh.*-L"
+   
+   # Check for processes using your tunnel ports
+   lsof -i :5433  # replace with your port
+   sudo kill -9 <PID>  # if any process is found
+   ```
+
+3. **Wait before restarting:**
+   ```bash
+   # Wait at least 10 seconds
+   sleep 10
+   ```
+
+4. **Restart cleanly:**
+   ```bash
+   go run .
+   ```
+
+**🔍 ROOT CAUSE:**
+This happens when:
+- Multiple tunnel instances with the same name are created
+- Network detection triggers rapid reconnection attempts
+- SSH process exits immediately but reconnection logic doesn't have proper delays
+
+**�️ PREVENTION:**
+- Always stop the application cleanly with Ctrl+C
+- Don't run multiple instances of the tunnel manager
+- Ensure SSH connections are stable before adding tunnels
+
+#### 2. **SSH Exit Status 255** 🔍 **DEBUGGING**
+**Symptoms:** Tunnel connects but immediately exits with error 255
+```
+2025/06/24 14:45:24 Tunnel 'localdb' connected successfully on port 5433
+2025/06/24 14:45:24 Tunnel 'localdb' exited with error: exit status 255
+```
+
+**🔍 DIAGNOSIS STEPS:**
+
+1. **Run the debug script:**
+   ```bash
+   ./debug-ssh.sh
+   ```
+
+2. **Test SSH connection manually:**
+   ```bash
+   ssh -v -i ~/.ssh/id_ed25519 avnish@35.200.246.135
+   ```
+
+3. **Check common causes:**
+   - **Authentication issues**: SSH key not added or wrong permissions
+   - **Network/Firewall**: Connection blocked by firewall
+   - **SSH server config**: Server doesn't allow tunneling
+   - **Key permissions**: SSH key file should be 600
+
+**🚨 QUICK FIXES:**
+
+1. **Fix SSH key permissions:**
+   ```bash
+   chmod 600 ~/.ssh/id_ed25519
+   ```
+
+2. **Add key to SSH agent:**
+   ```bash
+   ssh-add ~/.ssh/id_ed25519
+   ```
+
+3. **Test basic connectivity:**
+   ```bash
+   ping 35.200.246.135
+   telnet 35.200.246.135 22
+   ```
+
+4. **Check if port forwarding is allowed:**
+   ```bash
+   ssh -v -i ~/.ssh/id_ed25519 avnish@35.200.246.135 "echo 'Connection test'"
+   ```
+
+**💡 Common Exit Status 255 Causes:**
+- `Permission denied (publickey)` - SSH key not properly set up
+- `Connection refused` - Network/firewall blocking connection  
+- `Host key verification failed` - SSH host key issues
+- `AllowTcpForwarding no` - Server doesn't allow port forwarding
+
+#### 3. **Port Already in Use**
+**Error:** `bind: address already in use`
+
+**Solutions:**
+- Check what's using the port: `lsof -i :5432`
+- Kill the process: `sudo kill -9 <PID>`
+- Use a different local port in your SSH command
+
+#### 4. **SSH Connection Failed**
+**Error:** Various SSH authentication or connection errors
+
+**Solutions:**
+- Test SSH connection manually: `ssh user@bastion.example.com`
+- Check SSH agent: `ssh-add -l`
+- Add key to agent: `ssh-add ~/.ssh/id_ed25519`
+- Verify network connectivity: `ping bastion.example.com`
+
+#### 5. **Permission Denied**
+**Error:** SSH authentication failures
+
+**Solutions:**
+- Ensure SSH key is added to the bastion host
+- Check file permissions: `chmod 600 ~/.ssh/id_ed25519`
+- Verify SSH config syntax
+- Test with verbose SSH: `ssh -v user@bastion.example.com`
+
+#### 6. **Web Interface Not Loading**
+**Solutions:**
+- Check if port is already in use: `lsof -i :8080`
+- Try a different port: `PORT=9999 go run .`
+- Check firewall settings
+- Verify Go application is running: `ps aux | grep tunnel`
+
+### Emergency Recovery
+
+If the system becomes unresponsive due to rapid reconnection:
+
+```bash
+# 1. Force kill all related processes
+sudo pkill -f "go run"
+sudo pkill -f "easytunnel"
+sudo pkill -f "ssh.*-L"
+
+# 2. Clear any stuck ports (replace with your ports)
+sudo lsof -ti:5432,5433,8080 | xargs sudo kill -9
+
+# 3. Wait for cleanup
+sleep 15
+
+# 4. Restart with clean state
+go run .
+```
+
+### Debug Mode
+
+Enable verbose logging by modifying the SSH command to include debugging:
+
+```bash
+ssh -v -L 5432:db.internal:5432 user@bastion.example.com
+```
+
+## 🔒 Security Considerations
+
+- **SSH Keys**: Use strong SSH key authentication instead of passwords
+- **Network Access**: Restrict access to the web interface (default: localhost only)
+- **Firewall**: Configure firewalls appropriately for your tunneled services
+- **Monitoring**: Regularly monitor logs for suspicious activity
+
+## 📁 File Locations
+
+- **Configuration**: `~/.tunnel-manager/tunnels.json`
+- **Logs**: Console output (stdout/stderr)
+- **SSH Keys**: `~/.ssh/` directory
+
+## 🔄 API Endpoints
+
+The application provides REST API endpoints:
+
+- `GET /`: Web interface
+- `GET /api/status`: Get tunnel statuses
+- `POST /api/add`: Add new tunnel
+- `POST /api/toggle/{name}`: Start/stop tunnel
+- `DELETE /api/delete/{name}`: Delete tunnel
+- `GET /api/events`: Server-Sent Events stream
+
+## 🏗️ Architecture
+
+- **Backend**: Go with embedded HTTP server
+- **Frontend**: HTML/JavaScript with Tailwind CSS
+- **Real-time Updates**: Server-Sent Events (SSE)
+- **Network Monitoring**: Built-in connectivity detection
+- **Process Management**: Context-based goroutine management
+
+## 🚀 Performance Tips
+
+- **Limit Concurrent Tunnels**: Avoid running too many tunnels simultaneously
+- **Monitor Resources**: Keep an eye on CPU and memory usage
+- **Network Stability**: Ensure stable network connections to prevent reconnection loops
+- **SSH Multiplexing**: Consider using SSH connection multiplexing for multiple tunnels to the same host
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🐛 Reporting Issues
+
+When reporting issues, please include:
+
+- Operating system and version
+- Go version (`go version`)
+- SSH client version (`ssh -V`)
+- Complete error messages
+- Steps to reproduce
+- Log output
+
+## 📞 Support
+
+- Create an issue for bug reports
+- Check existing issues before reporting
+- Provide detailed information for faster resolution
+
+---
+
+**Built with ❤️ using Go and modern web technologies**
 ```
 
 ### Option 3: Download Binary

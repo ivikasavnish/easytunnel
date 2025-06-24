@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -108,6 +109,113 @@ type Tunnel struct {
 	lastHealthCheck time.Time
 }
 
+// isPortAvailable checks if a port is available for binding
+func isPortAvailable(port string) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
+	if err != nil {
+		return false
+	}
+	ln.Close()
+	return true
+}
+
+// getProcessesUsingPort returns a list of PIDs using the specified port
+func getProcessesUsingPort(port string) ([]int, error) {
+	cmd := exec.Command("lsof", "-ti", fmt.Sprintf(":%s", port))
+	output, err := cmd.Output()
+	if err != nil {
+		// If lsof fails, the port might be free or lsof not available
+		return []int{}, nil
+	}
+
+	var pids []int
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, line := range lines {
+		if line != "" {
+			if pid, err := strconv.Atoi(line); err == nil {
+				pids = append(pids, pid)
+			}
+		}
+	}
+
+	return pids, nil
+}
+
+// killProcessesOnPort kills all processes using the specified port
+func killProcessesOnPort(port string) error {
+	pids, err := getProcessesUsingPort(port)
+	if err != nil {
+		return fmt.Errorf("failed to get processes using port %s: %v", port, err)
+	}
+
+	if len(pids) == 0 {
+		log.Printf("No processes found using port %s", port)
+		return nil
+	}
+
+	log.Printf("Found %d process(es) using port %s: %v", len(pids), port, pids)
+
+	// Kill each process
+	for _, pid := range pids {
+		// First try graceful termination
+		if err := exec.Command("kill", "-TERM", fmt.Sprintf("%d", pid)).Run(); err != nil {
+			log.Printf("Failed to send TERM signal to PID %d: %v", pid, err)
+		} else {
+			log.Printf("Sent TERM signal to PID %d", pid)
+		}
+	}
+
+	// Wait a moment for graceful termination
+	time.Sleep(2 * time.Second)
+
+	// Check if processes are still running and force kill if necessary
+	remainingPids, _ := getProcessesUsingPort(port)
+	for _, pid := range remainingPids {
+		if err := exec.Command("kill", "-KILL", fmt.Sprintf("%d", pid)).Run(); err != nil {
+			log.Printf("Failed to force kill PID %d: %v", pid, err)
+		} else {
+			log.Printf("Force killed PID %d", pid)
+		}
+	}
+
+	// Final check
+	time.Sleep(1 * time.Second)
+	finalPids, _ := getProcessesUsingPort(port)
+	if len(finalPids) > 0 {
+		return fmt.Errorf("failed to kill all processes on port %s, remaining: %v", port, finalPids)
+	}
+
+	log.Printf("Successfully freed port %s", port)
+	return nil
+}
+
+// ensurePortAvailable ensures the port is available, killing processes if necessary
+func ensurePortAvailable(port string) error {
+	if isPortAvailable(port) {
+		log.Printf("Port %s is already available", port)
+		return nil
+	}
+
+	log.Printf("Port %s is in use, attempting to free it", port)
+
+	// Check if we're running with sufficient privileges
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("port %s is in use and insufficient privileges to kill processes (run with sudo)", port)
+	}
+
+	return killProcessesOnPort(port)
+}
+
+// getProcessInfoForPort gets detailed information about processes using a port
+func getProcessInfoForPort(port string) string {
+	cmd := exec.Command("lsof", "-i", fmt.Sprintf(":%s", port))
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Sprintf("Could not get process info for port %s", port)
+	}
+	return string(output)
+}
+
 // NewTunnelManager creates a new tunnel manager with network monitoring
 func NewTunnelManager() *TunnelManager {
 	// Determine config file location
@@ -151,9 +259,6 @@ func NewTunnelManager() *TunnelManager {
 		}
 	})
 
-	// Start background status broadcaster
-	go tm.startStatusBroadcaster(ctx)
-
 	return tm
 }
 
@@ -169,6 +274,21 @@ func (tm *TunnelManager) AddTunnel(config TunnelConfig) error {
 		}
 		config.LocalPort = port
 		config.AutoExtracted = true
+	}
+
+	// Check if port is available and free it if necessary
+	if !isPortAvailable(config.LocalPort) {
+		log.Printf("Port %s is in use. Process info:", config.LocalPort)
+		log.Printf("%s", getProcessInfoForPort(config.LocalPort))
+
+		if err := ensurePortAvailable(config.LocalPort); err != nil {
+			return fmt.Errorf("failed to free port %s: %v", config.LocalPort, err)
+		}
+
+		// Double-check that port is now available
+		if !isPortAvailable(config.LocalPort) {
+			return fmt.Errorf("port %s is still not available after cleanup attempt", config.LocalPort)
+		}
 	}
 
 	tunnel := &Tunnel{
@@ -272,11 +392,22 @@ func (t *Tunnel) Start() {
 	defer t.mutex.Unlock()
 
 	if t.status == "connected" || t.status == "connecting" {
+		log.Printf("Tunnel '%s' is already %s, skipping start", t.config.Name, t.status)
 		return
+	}
+
+	// Cancel any existing maintenance goroutine
+	if t.cancel != nil {
+		t.cancel()
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.cancel = cancel
+
+	// Set status to connecting to prevent multiple starts
+	t.status = "connecting"
+
+	log.Printf("Starting maintenance goroutine for tunnel '%s'", t.config.Name)
 
 	// Start health monitoring
 	t.startHealthMonitoring(ctx)
@@ -373,22 +504,21 @@ func (t *Tunnel) maintain(ctx context.Context) {
 			// Attempt to connect
 			success := t.connect()
 
-			// If connection was successful, wait for it to fail
-			if success {
-				retryDelay = 5 * time.Second // Reset on success
-				// The connect method will block until the tunnel fails
-				continue
-			}
-
-			// Connection failed, wait before retrying
+			// If connection was successful, it will have blocked until the tunnel failed
+			// Always wait before retrying, regardless of success/failure
 			select {
 			case <-ctx.Done():
 				return
 			case <-time.After(retryDelay):
 				// Increase retry delay, but cap it
-				retryDelay = retryDelay * 2
-				if retryDelay > maxRetryDelay {
-					retryDelay = maxRetryDelay
+				if !success {
+					retryDelay = retryDelay * 2
+					if retryDelay > maxRetryDelay {
+						retryDelay = maxRetryDelay
+					}
+				} else {
+					// On successful connection that then failed, use a moderate delay
+					retryDelay = 10 * time.Second // Wait 10 seconds after a connection that failed
 				}
 			}
 		}
@@ -471,12 +601,24 @@ func (t *Tunnel) waitForNetwork(ctx context.Context, checkInterval time.Duration
 
 func (t *Tunnel) connect() bool {
 	t.mutex.Lock()
+
+	// Ensure port is available before attempting connection
+	if !isPortAvailable(t.config.LocalPort) {
+		log.Printf("Port %s is in use before connecting tunnel '%s', attempting to free it", t.config.LocalPort, t.config.Name)
+		if err := ensurePortAvailable(t.config.LocalPort); err != nil {
+			t.status = "error"
+			t.lastError = fmt.Sprintf("Failed to free port %s: %v", t.config.LocalPort, err)
+			t.mutex.Unlock()
+			return false
+		}
+	}
+
 	t.status = "connecting"
 	t.lastError = ""
 	t.mutex.Unlock()
 
 	// SSH key management disabled - will rely on existing ssh-agent or manual key management
-	log.Printf("Connecting tunnel '%s' without automatic key management", t.config.Name)
+	log.Printf("Connecting tunnel '%s' on port %s (auto-freed if needed)", t.config.Name, t.config.LocalPort)
 
 	// Build SSH command with better options for tunneling
 	args, err := parseSSHCommand(t.config.Command)
@@ -525,7 +667,7 @@ func (t *Tunnel) connect() bool {
 		enhancedArgs = append(enhancedArgs, "-o", "UserKnownHostsFile=/dev/null")
 	}
 	if !strings.Contains(cmdStr, "LogLevel") {
-		enhancedArgs = append(enhancedArgs, "-o", "LogLevel=ERROR")
+		enhancedArgs = append(enhancedArgs, "-o", "LogLevel=VERBOSE")
 	}
 
 	// Add the rest of the original arguments (skip the first 'ssh' argument)
@@ -589,12 +731,15 @@ func (t *Tunnel) connect() bool {
 			stderrOutput := stderr.String()
 			if stderrOutput != "" {
 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
+				log.Printf("Tunnel '%s' SSH stderr: %s", t.config.Name, stderrOutput)
 			} else {
 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
 			}
 			t.status = "error"
+			log.Printf("Tunnel '%s' exited with error: %v", t.config.Name, err)
 		} else {
 			t.status = "disconnected"
+			log.Printf("Tunnel '%s' exited normally", t.config.Name)
 		}
 		t.mutex.Unlock()
 		return true // Connection was established (even if it later failed)
@@ -616,12 +761,15 @@ func (t *Tunnel) connect() bool {
 			stderrOutput := stderr.String()
 			if stderrOutput != "" {
 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
+				log.Printf("Tunnel '%s' (no port check) SSH stderr: %s", t.config.Name, stderrOutput)
 			} else {
 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
 			}
 			t.status = "error"
+			log.Printf("Tunnel '%s' (no port check) exited with error: %v", t.config.Name, err)
 		} else {
 			t.status = "disconnected"
+			log.Printf("Tunnel '%s' (no port check) exited normally", t.config.Name)
 		}
 		t.mutex.Unlock()
 		return true // Connection was attempted (even if port check failed)
@@ -840,6 +988,151 @@ func (tm *TunnelManager) loadConfig() {
 	}
 }
 
+// NetworkMonitor monitors network connectivity changes
+type NetworkMonitor struct {
+	callbacks   []func(bool)
+	mutex       sync.RWMutex
+	isRunning   bool
+	eventSender func(string, interface{})
+}
+
+// NewNetworkMonitor creates a new network monitor
+func NewNetworkMonitor() *NetworkMonitor {
+	return &NetworkMonitor{
+		callbacks: make([]func(bool), 0),
+	}
+}
+
+// SetEventSender sets the function to send SSE events
+func (nm *NetworkMonitor) SetEventSender(sender func(string, interface{})) {
+	nm.mutex.Lock()
+	defer nm.mutex.Unlock()
+	nm.eventSender = sender
+}
+
+// AddCallback adds a callback for network changes
+func (nm *NetworkMonitor) AddCallback(callback func(bool)) {
+	nm.mutex.Lock()
+	defer nm.mutex.Unlock()
+	nm.callbacks = append(nm.callbacks, callback)
+}
+
+// Start starts monitoring network changes
+func (nm *NetworkMonitor) Start(ctx context.Context) {
+	nm.mutex.Lock()
+	if nm.isRunning {
+		nm.mutex.Unlock()
+		return
+	}
+	nm.isRunning = true
+	nm.mutex.Unlock()
+
+	go nm.monitor(ctx)
+}
+
+// monitor runs the network monitoring loop
+func (nm *NetworkMonitor) monitor(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	var lastNetworkState bool
+
+	// Initial network state check
+	currentState := nm.checkNetworkConnectivity()
+	lastNetworkState = currentState
+
+	for {
+		select {
+		case <-ctx.Done():
+			nm.mutex.Lock()
+			nm.isRunning = false
+			nm.mutex.Unlock()
+			return
+		case <-ticker.C:
+			currentState := nm.checkNetworkConnectivity()
+			if currentState != lastNetworkState {
+				log.Printf("Network state changed: %t -> %t", lastNetworkState, currentState)
+				nm.notifyCallbacks(currentState)
+
+				// Send SSE event about network change
+				if nm.eventSender != nil {
+					nm.eventSender("network_change", map[string]interface{}{
+						"available": currentState,
+						"previous":  lastNetworkState,
+						"timestamp": time.Now().UTC(),
+					})
+				}
+
+				lastNetworkState = currentState
+			}
+		}
+	}
+}
+
+// checkNetworkConnectivity checks if network is available
+func (nm *NetworkMonitor) checkNetworkConnectivity() bool {
+	// Try to connect to a reliable service
+	conn, err := net.DialTimeout("tcp", "8.8.8.8:53", 3*time.Second)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// notifyCallbacks notifies all registered callbacks of network changes
+func (nm *NetworkMonitor) notifyCallbacks(isConnected bool) {
+	nm.mutex.RLock()
+	defer nm.mutex.RUnlock()
+
+	for _, callback := range nm.callbacks {
+		go callback(isConnected)
+	}
+}
+
+// onNetworkRestored handles network restoration by triggering reconnections
+func (tm *TunnelManager) onNetworkRestored() {
+	tm.mutex.RLock()
+	defer tm.mutex.RUnlock()
+
+	for _, tunnel := range tm.tunnels {
+		if tunnel.config.Enabled {
+			tunnel.mutex.Lock()
+			if tunnel.status == "error" && strings.Contains(tunnel.lastError, "Network") {
+				log.Printf("Triggering reconnection for tunnel '%s' after network restoration", tunnel.config.Name)
+				tunnel.status = "disconnected"
+				tunnel.lastError = ""
+			}
+			tunnel.mutex.Unlock()
+		}
+	}
+}
+
+// startStatusBroadcaster periodically broadcasts tunnel status updates
+func (tm *TunnelManager) startStatusBroadcaster(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	var lastStatusJSON string
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			status := tm.GetStatus()
+			statusJSON, _ := json.Marshal(status)
+			currentStatusStr := string(statusJSON)
+
+			// Only broadcast if status changed
+			if currentStatusStr != lastStatusJSON {
+				tm.BroadcastSSE("status_update", status)
+				lastStatusJSON = currentStatusStr
+			}
+		}
+	}
+}
+
 func main() {
 	manager := NewTunnelManager()
 
@@ -1034,6 +1327,99 @@ func main() {
 
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("Network change event triggered"))
+	})
+
+	// Port management API endpoint
+	http.HandleFunc("/api/kill-port/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			return
+		}
+
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		port := strings.TrimPrefix(r.URL.Path, "/api/kill-port/")
+		if port == "" {
+			http.Error(w, "Port number required", http.StatusBadRequest)
+			return
+		}
+
+		// Validate port number
+		if _, err := strconv.Atoi(port); err != nil {
+			http.Error(w, "Invalid port number", http.StatusBadRequest)
+			return
+		}
+
+		log.Printf("Manual port kill requested for port %s", port)
+
+		// Get process info before killing
+		processInfo := getProcessInfoForPort(port)
+		log.Printf("Processes using port %s:\n%s", port, processInfo)
+
+		// Kill processes on the port
+		if err := killProcessesOnPort(port); err != nil {
+			log.Printf("Failed to kill processes on port %s: %v", port, err)
+			http.Error(w, fmt.Sprintf("Failed to kill processes on port %s: %v", port, err), http.StatusInternalServerError)
+			return
+		}
+
+		response := map[string]interface{}{
+			"success":     true,
+			"port":        port,
+			"message":     fmt.Sprintf("Successfully freed port %s", port),
+			"processInfo": processInfo,
+			"timestamp":   time.Now().UTC(),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	})
+
+	// Port status check API endpoint
+	http.HandleFunc("/api/port-status/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			return
+		}
+
+		port := strings.TrimPrefix(r.URL.Path, "/api/port-status/")
+		if port == "" {
+			http.Error(w, "Port number required", http.StatusBadRequest)
+			return
+		}
+
+		// Validate port number
+		if _, err := strconv.Atoi(port); err != nil {
+			http.Error(w, "Invalid port number", http.StatusBadRequest)
+			return
+		}
+
+		available := isPortAvailable(port)
+		pids, _ := getProcessesUsingPort(port)
+		processInfo := ""
+		if !available {
+			processInfo = getProcessInfoForPort(port)
+		}
+
+		response := map[string]interface{}{
+			"port":        port,
+			"available":   available,
+			"pids":        pids,
+			"processInfo": processInfo,
+			"timestamp":   time.Now().UTC(),
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	})
 
 	// Start server
@@ -1257,149 +1643,4 @@ func ensureSSHAgentRunning() error {
 
 	log.Printf("Started ssh-agent")
 	return nil
-}
-
-// NetworkMonitor monitors network connectivity changes
-type NetworkMonitor struct {
-	callbacks   []func(bool)
-	mutex       sync.RWMutex
-	isRunning   bool
-	eventSender func(string, interface{})
-}
-
-// NewNetworkMonitor creates a new network monitor
-func NewNetworkMonitor() *NetworkMonitor {
-	return &NetworkMonitor{
-		callbacks: make([]func(bool), 0),
-	}
-}
-
-// SetEventSender sets the function to send SSE events
-func (nm *NetworkMonitor) SetEventSender(sender func(string, interface{})) {
-	nm.mutex.Lock()
-	defer nm.mutex.Unlock()
-	nm.eventSender = sender
-}
-
-// AddCallback adds a callback for network changes
-func (nm *NetworkMonitor) AddCallback(callback func(bool)) {
-	nm.mutex.Lock()
-	defer nm.mutex.Unlock()
-	nm.callbacks = append(nm.callbacks, callback)
-}
-
-// Start starts monitoring network changes
-func (nm *NetworkMonitor) Start(ctx context.Context) {
-	nm.mutex.Lock()
-	if nm.isRunning {
-		nm.mutex.Unlock()
-		return
-	}
-	nm.isRunning = true
-	nm.mutex.Unlock()
-
-	go nm.monitor(ctx)
-}
-
-// monitor runs the network monitoring loop
-func (nm *NetworkMonitor) monitor(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	var lastNetworkState bool
-
-	// Initial network state check
-	currentState := nm.checkNetworkConnectivity()
-	lastNetworkState = currentState
-
-	for {
-		select {
-		case <-ctx.Done():
-			nm.mutex.Lock()
-			nm.isRunning = false
-			nm.mutex.Unlock()
-			return
-		case <-ticker.C:
-			currentState := nm.checkNetworkConnectivity()
-			if currentState != lastNetworkState {
-				log.Printf("Network state changed: %t -> %t", lastNetworkState, currentState)
-				nm.notifyCallbacks(currentState)
-
-				// Send SSE event about network change
-				if nm.eventSender != nil {
-					nm.eventSender("network_change", map[string]interface{}{
-						"available": currentState,
-						"previous":  lastNetworkState,
-						"timestamp": time.Now().UTC(),
-					})
-				}
-
-				lastNetworkState = currentState
-			}
-		}
-	}
-}
-
-// checkNetworkConnectivity checks if network is available
-func (nm *NetworkMonitor) checkNetworkConnectivity() bool {
-	// Try to connect to a reliable service
-	conn, err := net.DialTimeout("tcp", "8.8.8.8:53", 3*time.Second)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-// notifyCallbacks notifies all registered callbacks of network changes
-func (nm *NetworkMonitor) notifyCallbacks(isConnected bool) {
-	nm.mutex.RLock()
-	defer nm.mutex.RUnlock()
-
-	for _, callback := range nm.callbacks {
-		go callback(isConnected)
-	}
-}
-
-// onNetworkRestored handles network restoration by triggering reconnections
-func (tm *TunnelManager) onNetworkRestored() {
-	tm.mutex.RLock()
-	defer tm.mutex.RUnlock()
-
-	for _, tunnel := range tm.tunnels {
-		if tunnel.config.Enabled {
-			tunnel.mutex.Lock()
-			if tunnel.status == "error" && strings.Contains(tunnel.lastError, "Network") {
-				log.Printf("Triggering reconnection for tunnel '%s' after network restoration", tunnel.config.Name)
-				tunnel.status = "disconnected"
-				tunnel.lastError = ""
-			}
-			tunnel.mutex.Unlock()
-		}
-	}
-}
-
-// startStatusBroadcaster periodically broadcasts tunnel status updates
-func (tm *TunnelManager) startStatusBroadcaster(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-
-	var lastStatusJSON string
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			status := tm.GetStatus()
-			statusJSON, _ := json.Marshal(status)
-			currentStatusStr := string(statusJSON)
-
-			// Only broadcast if status changed
-			if currentStatusStr != lastStatusJSON {
-				tm.BroadcastSSE("status_update", status)
-				lastStatusJSON = currentStatusStr
-			}
-		}
-	}
 }
