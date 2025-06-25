@@ -22,6 +22,16 @@ import (
 	"time"
 )
 
+// Version information (set by build flags)
+var (
+	Version    = "dev"
+	BuildTime  = "unknown"
+	CommitHash = "unknown"
+)
+
+// Port management functions for forceful port reclamation
+// Since this application runs with sudo, it can kill processes using needed ports
+
 //go:embed index.html
 var indexHTML string
 
@@ -113,6 +123,7 @@ type Tunnel struct {
 func isPortAvailable(port string) bool {
 	ln, err := net.Listen("tcp", fmt.Sprintf(":%s", port))
 	if err != nil {
+
 		return false
 	}
 	ln.Close()
@@ -200,7 +211,8 @@ func ensurePortAvailable(port string) error {
 
 	// Check if we're running with sufficient privileges
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("port %s is in use and insufficient privileges to kill processes (run with sudo)", port)
+		log.Printf("Warning: Not running as root - may not be able to kill all processes on port %s", port)
+		// Still try to kill processes, but warn user
 	}
 
 	return killProcessesOnPort(port)
@@ -308,43 +320,43 @@ func (tm *TunnelManager) AddTunnel(config TunnelConfig) error {
 	return nil
 }
 
-func (tm *TunnelManager) GetStatus() []TunnelStatus {
-	tm.mutex.RLock()
-	defer tm.mutex.RUnlock()
+// func (tm *TunnelManager) GetStatus() []TunnelStatus {
+// 	tm.mutex.RLock()
+// 	defer tm.mutex.RUnlock()
 
-	var statuses []TunnelStatus
-	for _, tunnel := range tm.tunnels {
-		tunnel.mutex.RLock()
-		uptime := ""
-		if tunnel.status == "connected" && !tunnel.connectedAt.IsZero() {
-			uptime = time.Since(tunnel.connectedAt).Round(time.Second).String()
-		}
+// 	var statuses []TunnelStatus
+// 	for _, tunnel := range tm.tunnels {
+// 		tunnel.mutex.RLock()
+// 		uptime := ""
+// 		if tunnel.status == "connected" && !tunnel.connectedAt.IsZero() {
+// 			uptime = time.Since(tunnel.connectedAt).Round(time.Second).String()
+// 		}
 
-		pid := 0
-		if tunnel.cmd != nil && tunnel.cmd.Process != nil {
-			pid = tunnel.cmd.Process.Pid
-		}
+// 		pid := 0
+// 		if tunnel.cmd != nil && tunnel.cmd.Process != nil {
+// 			pid = tunnel.cmd.Process.Pid
+// 		}
 
-		lastHealthCheck := ""
-		if !tunnel.lastHealthCheck.IsZero() {
-			lastHealthCheck = tunnel.lastHealthCheck.Format("15:04:05")
-		}
+// 		lastHealthCheck := ""
+// 		if !tunnel.lastHealthCheck.IsZero() {
+// 			lastHealthCheck = tunnel.lastHealthCheck.Format("15:04:05")
+// 		}
 
-		status := TunnelStatus{
-			Config:          tunnel.config,
-			Status:          tunnel.status,
-			LastError:       tunnel.lastError,
-			ConnectedAt:     tunnel.connectedAt,
-			Uptime:          uptime,
-			PID:             pid,
-			LastHealthCheck: lastHealthCheck,
-		}
-		tunnel.mutex.RUnlock()
-		statuses = append(statuses, status)
-	}
+// 		status := TunnelStatus{
+// 			Config:          tunnel.config,
+// 			Status:          tunnel.status,
+// 			LastError:       tunnel.lastError,
+// 			ConnectedAt:     tunnel.connectedAt,
+// 			Uptime:          uptime,
+// 			PID:             pid,
+// 			LastHealthCheck: lastHealthCheck,
+// 		}
+// 		tunnel.mutex.RUnlock()
+// 		statuses = append(statuses, status)
+// 	}
 
-	return statuses
-}
+// 	return statuses
+// }
 
 func (tm *TunnelManager) ToggleTunnel(name string) error {
 	tm.mutex.Lock()
@@ -599,202 +611,202 @@ func (t *Tunnel) waitForNetwork(ctx context.Context, checkInterval time.Duration
 	}
 }
 
-func (t *Tunnel) connect() bool {
-	t.mutex.Lock()
+// func (t *Tunnel) connect() bool {
+// 	t.mutex.Lock()
 
-	// Ensure port is available before attempting connection
-	if !isPortAvailable(t.config.LocalPort) {
-		log.Printf("Port %s is in use before connecting tunnel '%s', attempting to free it", t.config.LocalPort, t.config.Name)
-		if err := ensurePortAvailable(t.config.LocalPort); err != nil {
-			t.status = "error"
-			t.lastError = fmt.Sprintf("Failed to free port %s: %v", t.config.LocalPort, err)
-			t.mutex.Unlock()
-			return false
-		}
-	}
+// 	// Ensure port is available before attempting connection
+// 	if !isPortAvailable(t.config.LocalPort) {
+// 		log.Printf("Port %s is in use before connecting tunnel '%s', attempting to free it", t.config.LocalPort, t.config.Name)
+// 		if err := ensurePortAvailable(t.config.LocalPort); err != nil {
+// 			t.status = "error"
+// 			t.lastError = fmt.Sprintf("Failed to free port %s: %v", t.config.LocalPort, err)
+// 			t.mutex.Unlock()
+// 			return false
+// 		}
+// 	}
 
-	t.status = "connecting"
-	t.lastError = ""
-	t.mutex.Unlock()
+// 	t.status = "connecting"
+// 	t.lastError = ""
+// 	t.mutex.Unlock()
 
-	// SSH key management disabled - will rely on existing ssh-agent or manual key management
-	log.Printf("Connecting tunnel '%s' on port %s (auto-freed if needed)", t.config.Name, t.config.LocalPort)
+// 	// SSH key management disabled - will rely on existing ssh-agent or manual key management
+// 	log.Printf("Connecting tunnel '%s' on port %s (auto-freed if needed)", t.config.Name, t.config.LocalPort)
 
-	// Build SSH command with better options for tunneling
-	args, err := parseSSHCommand(t.config.Command)
-	if err != nil {
-		t.mutex.Lock()
-		t.status = "error"
-		t.lastError = fmt.Sprintf("Failed to parse command: %v", err)
-		t.mutex.Unlock()
-		return false
-	}
+// 	// Build SSH command with better options for tunneling
+// 	args, err := parseSSHCommand(t.config.Command)
+// 	if err != nil {
+// 		t.mutex.Lock()
+// 		t.status = "error"
+// 		t.lastError = fmt.Sprintf("Failed to parse command: %v", err)
+// 		t.mutex.Unlock()
+// 		return false
+// 	}
 
-	// Ensure the first argument is actually 'ssh'
-	if len(args) == 0 || !strings.Contains(args[0], "ssh") {
-		t.mutex.Lock()
-		t.status = "error"
-		t.lastError = "Command must start with 'ssh'"
-		t.mutex.Unlock()
-		return false
-	}
+// 	// Ensure the first argument is actually 'ssh'
+// 	if len(args) == 0 || !strings.Contains(args[0], "ssh") {
+// 		t.mutex.Lock()
+// 		t.status = "error"
+// 		t.lastError = "Command must start with 'ssh'"
+// 		t.mutex.Unlock()
+// 		return false
+// 	}
 
-	// Add additional SSH options for better tunneling
-	enhancedArgs := make([]string, 0, len(args)+10)
-	enhancedArgs = append(enhancedArgs, "ssh") // Always use 'ssh' as the command
+// 	// Add additional SSH options for better tunneling
+// 	enhancedArgs := make([]string, 0, len(args)+10)
+// 	enhancedArgs = append(enhancedArgs, "ssh") // Always use 'ssh' as the command
 
-	// Add SSH options if not already present
-	cmdStr := strings.Join(args, " ")
-	if !strings.Contains(cmdStr, "-N") {
-		enhancedArgs = append(enhancedArgs, "-N") // No remote command
-	}
-	if !strings.Contains(cmdStr, "-T") {
-		enhancedArgs = append(enhancedArgs, "-T") // Disable pseudo-terminal
-	}
-	if !strings.Contains(cmdStr, "ServerAliveInterval") {
-		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveInterval=30")
-	}
-	if !strings.Contains(cmdStr, "ServerAliveCountMax") {
-		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveCountMax=3")
-	}
-	if !strings.Contains(cmdStr, "ExitOnForwardFailure") {
-		enhancedArgs = append(enhancedArgs, "-o", "ExitOnForwardFailure=yes")
-	}
-	if !strings.Contains(cmdStr, "StrictHostKeyChecking") {
-		enhancedArgs = append(enhancedArgs, "-o", "StrictHostKeyChecking=no")
-	}
-	if !strings.Contains(cmdStr, "UserKnownHostsFile") {
-		enhancedArgs = append(enhancedArgs, "-o", "UserKnownHostsFile=/dev/null")
-	}
-	if !strings.Contains(cmdStr, "LogLevel") {
-		enhancedArgs = append(enhancedArgs, "-o", "LogLevel=VERBOSE")
-	}
+// 	// Add SSH options if not already present
+// 	cmdStr := strings.Join(args, " ")
+// 	if !strings.Contains(cmdStr, "-N") {
+// 		enhancedArgs = append(enhancedArgs, "-N") // No remote command
+// 	}
+// 	if !strings.Contains(cmdStr, "-T") {
+// 		enhancedArgs = append(enhancedArgs, "-T") // Disable pseudo-terminal
+// 	}
+// 	if !strings.Contains(cmdStr, "ServerAliveInterval") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveInterval=30")
+// 	}
+// 	if !strings.Contains(cmdStr, "ServerAliveCountMax") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveCountMax=3")
+// 	}
+// 	if !strings.Contains(cmdStr, "ExitOnForwardFailure") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "ExitOnForwardFailure=yes")
+// 	}
+// 	if !strings.Contains(cmdStr, "StrictHostKeyChecking") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "StrictHostKeyChecking=no")
+// 	}
+// 	if !strings.Contains(cmdStr, "UserKnownHostsFile") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "UserKnownHostsFile=/dev/null")
+// 	}
+// 	if !strings.Contains(cmdStr, "LogLevel") {
+// 		enhancedArgs = append(enhancedArgs, "-o", "LogLevel=VERBOSE")
+// 	}
 
-	// Add the rest of the original arguments (skip the first 'ssh' argument)
-	if len(args) > 1 {
-		enhancedArgs = append(enhancedArgs, args[1:]...)
-	}
+// 	// Add the rest of the original arguments (skip the first 'ssh' argument)
+// 	if len(args) > 1 {
+// 		enhancedArgs = append(enhancedArgs, args[1:]...)
+// 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+// 	ctx, cancel := context.WithCancel(context.Background())
+// 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, enhancedArgs[0], enhancedArgs[1:]...)
+// 	cmd := exec.CommandContext(ctx, enhancedArgs[0], enhancedArgs[1:]...)
 
-	// Capture stderr to see SSH errors
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	cmd.Stdout = nil
+// 	// Capture stderr to see SSH errors
+// 	var stderr strings.Builder
+// 	cmd.Stderr = &stderr
+// 	cmd.Stdout = nil
 
-	t.mutex.Lock()
-	t.cmd = cmd
-	t.mutex.Unlock()
+// 	t.mutex.Lock()
+// 	t.cmd = cmd
+// 	t.mutex.Unlock()
 
-	log.Printf("Starting tunnel '%s' with command: %s", t.config.Name, strings.Join(enhancedArgs, " "))
+// 	log.Printf("Starting tunnel '%s' with command: %s", t.config.Name, strings.Join(enhancedArgs, " "))
 
-	// Start the SSH command
-	err = cmd.Start()
-	if err != nil {
-		t.mutex.Lock()
-		t.status = "error"
-		t.lastError = fmt.Sprintf("Failed to start SSH: %v", err)
-		t.mutex.Unlock()
-		return false
-	}
+// 	// Start the SSH command
+// 	err = cmd.Start()
+// 	if err != nil {
+// 		t.mutex.Lock()
+// 		t.status = "error"
+// 		t.lastError = fmt.Sprintf("Failed to start SSH: %v", err)
+// 		t.mutex.Unlock()
+// 		return false
+// 	}
 
-	// Give SSH more time to establish the tunnel and try multiple times
-	connected := false
-	for i := 0; i < 10; i++ {
-		time.Sleep(1 * time.Second)
-		if t.isPortOpen() {
-			connected = true
-			break
-		}
-		// Check if process is still running
-		if cmd.Process == nil {
-			break
-		}
-	}
+// 	// Give SSH more time to establish the tunnel and try multiple times
+// 	connected := false
+// 	for i := 0; i < 10; i++ {
+// 		time.Sleep(1 * time.Second)
+// 		if t.isPortOpen() {
+// 			connected = true
+// 			break
+// 		}
+// 		// Check if process is still running
+// 		if cmd.Process == nil {
+// 			break
+// 		}
+// 	}
 
-	if connected {
-		t.mutex.Lock()
-		t.status = "connected"
-		t.connectedAt = time.Now()
-		t.mutex.Unlock()
+// 	if connected {
+// 		t.mutex.Lock()
+// 		t.status = "connected"
+// 		t.connectedAt = time.Now()
+// 		t.mutex.Unlock()
 
-		log.Printf("Tunnel '%s' connected successfully on port %s", t.config.Name, t.config.LocalPort)
+// 		log.Printf("Tunnel '%s' connected successfully on port %s", t.config.Name, t.config.LocalPort)
 
-		// Wait for the command to finish
-		err = cmd.Wait()
+// 		// Wait for the command to finish
+// 		err = cmd.Wait()
 
-		t.mutex.Lock()
-		if err != nil {
-			stderrOutput := stderr.String()
-			if stderrOutput != "" {
-				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
-				log.Printf("Tunnel '%s' SSH stderr: %s", t.config.Name, stderrOutput)
-			} else {
-				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
-			}
-			t.status = "error"
-			log.Printf("Tunnel '%s' exited with error: %v", t.config.Name, err)
-		} else {
-			t.status = "disconnected"
-			log.Printf("Tunnel '%s' exited normally", t.config.Name)
-		}
-		t.mutex.Unlock()
-		return true // Connection was established (even if it later failed)
-	} else {
-		// Don't kill immediately - SSH might still be working even if port check fails
-		t.mutex.Lock()
-		t.status = "connected" // Assume it's working even if port check fails
-		t.connectedAt = time.Now()
-		t.lastError = "Port check failed but tunnel may still be working"
-		t.mutex.Unlock()
+// 		t.mutex.Lock()
+// 		if err != nil {
+// 			stderrOutput := stderr.String()
+// 			if stderrOutput != "" {
+// 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
+// 				log.Printf("Tunnel '%s' SSH stderr: %s", t.config.Name, stderrOutput)
+// 			} else {
+// 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
+// 			}
+// 			t.status = "error"
+// 			log.Printf("Tunnel '%s' exited with error: %v", t.config.Name, err)
+// 		} else {
+// 			t.status = "disconnected"
+// 			log.Printf("Tunnel '%s' exited normally", t.config.Name)
+// 		}
+// 		t.mutex.Unlock()
+// 		return true // Connection was established (even if it later failed)
+// 	} else {
+// 		// Don't kill immediately - SSH might still be working even if port check fails
+// 		t.mutex.Lock()
+// 		t.status = "connected" // Assume it's working even if port check fails
+// 		t.connectedAt = time.Now()
+// 		t.lastError = "Port check failed but tunnel may still be working"
+// 		t.mutex.Unlock()
 
-		log.Printf("Tunnel '%s' started but port check failed - assuming it's working", t.config.Name)
+// 		log.Printf("Tunnel '%s' started but port check failed - assuming it's working", t.config.Name)
 
-		// Wait for the command to finish
-		err = cmd.Wait()
+// 		// Wait for the command to finish
+// 		err = cmd.Wait()
 
-		t.mutex.Lock()
-		if err != nil {
-			stderrOutput := stderr.String()
-			if stderrOutput != "" {
-				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
-				log.Printf("Tunnel '%s' (no port check) SSH stderr: %s", t.config.Name, stderrOutput)
-			} else {
-				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
-			}
-			t.status = "error"
-			log.Printf("Tunnel '%s' (no port check) exited with error: %v", t.config.Name, err)
-		} else {
-			t.status = "disconnected"
-			log.Printf("Tunnel '%s' (no port check) exited normally", t.config.Name)
-		}
-		t.mutex.Unlock()
-		return true // Connection was attempted (even if port check failed)
-	}
-}
+// 		t.mutex.Lock()
+// 		if err != nil {
+// 			stderrOutput := stderr.String()
+// 			if stderrOutput != "" {
+// 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
+// 				log.Printf("Tunnel '%s' (no port check) SSH stderr: %s", t.config.Name, stderrOutput)
+// 			} else {
+// 				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
+// 			}
+// 			t.status = "error"
+// 			log.Printf("Tunnel '%s' (no port check) exited with error: %v", t.config.Name, err)
+// 		} else {
+// 			t.status = "disconnected"
+// 			log.Printf("Tunnel '%s' (no port check) exited normally", t.config.Name)
+// 		}
+// 		t.mutex.Unlock()
+// 		return true // Connection was attempted (even if port check failed)
+// 	}
+// }
 
-func (t *Tunnel) isPortOpen() bool {
-	// Try to connect to the local port
-	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", t.config.LocalPort), 2*time.Second)
-	if err != nil {
-		// If connection failed, try alternative checks
+// func (t *Tunnel) isPortOpen() bool {
+// 	// Try to connect to the local port
+// 	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", t.config.LocalPort), 2*time.Second)
+// 	if err != nil {
+// 		// If connection failed, try alternative checks
 
-		// Check if something is listening on the port
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%s", t.config.LocalPort))
-		if err != nil {
-			// Port is in use (which is good - means SSH is using it)
-			return true
-		}
-		ln.Close()
-		// Port is available (which is bad - means SSH isn't using it)
-		return false
-	}
-	conn.Close()
-	return true
-}
+// 		// Check if something is listening on the port
+// 		ln, err := net.Listen("tcp", fmt.Sprintf(":%s", t.config.LocalPort))
+// 		if err != nil {
+// 			// Port is in use (which is good - means SSH is using it)
+// 			return true
+// 		}
+// 		ln.Close()
+// 		// Port is available (which is bad - means SSH isn't using it)
+// 		return false
+// 	}
+// 	conn.Close()
+// 	return true
+// }
 
 // isNetworkAvailable checks if network connectivity is available
 func (t *Tunnel) isNetworkAvailable() bool {
@@ -1108,32 +1120,57 @@ func (tm *TunnelManager) onNetworkRestored() {
 	}
 }
 
-// startStatusBroadcaster periodically broadcasts tunnel status updates
-func (tm *TunnelManager) startStatusBroadcaster(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
+// // startStatusBroadcaster periodically broadcasts tunnel status updates
+// func (tm *TunnelManager) startStatusBroadcaster(ctx context.Context) {
+// 	ticker := time.NewTicker(3 * time.Second)
+// 	defer ticker.Stop()
 
-	var lastStatusJSON string
+// 	var lastStatusJSON string
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			status := tm.GetStatus()
-			statusJSON, _ := json.Marshal(status)
-			currentStatusStr := string(statusJSON)
+// 	for {
+// 		select {
+// 		case <-ctx.Done():
+// 			return
+// 		case <-ticker.C:
+// 			status := tm.GetStatus()
+// 			statusJSON, _ := json.Marshal(status)
+// 			currentStatusStr := string(statusJSON)
 
-			// Only broadcast if status changed
-			if currentStatusStr != lastStatusJSON {
-				tm.BroadcastSSE("status_update", status)
-				lastStatusJSON = currentStatusStr
-			}
-		}
-	}
-}
+// 			// Only broadcast if status changed
+// 			if currentStatusStr != lastStatusJSON {
+// 				tm.BroadcastSSE("status_update", status)
+// 				lastStatusJSON = currentStatusStr
+// 			}
+// 		}
+// 	}
+// }
 
 func main() {
+	// Handle version flag
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-v", "version":
+			fmt.Printf("Easy SSH Tunnel Manager\n")
+			fmt.Printf("Version: %s\n", Version)
+			fmt.Printf("Build Time: %s\n", BuildTime)
+			fmt.Printf("Commit: %s\n", CommitHash)
+			return
+		case "--help", "-h", "help":
+			fmt.Printf("Easy SSH Tunnel Manager - Web-based SSH tunnel management\n\n")
+			fmt.Printf("Usage: %s [options]\n\n", os.Args[0])
+			fmt.Printf("Options:\n")
+			fmt.Printf("  --version, -v    Show version information\n")
+			fmt.Printf("  --help, -h       Show this help message\n\n")
+			fmt.Printf("Environment Variables:\n")
+			fmt.Printf("  PORT             Web server port (default: 10000)\n\n")
+			fmt.Printf("Web Interface:\n")
+			fmt.Printf("  http://localhost:10000  (or custom PORT)\n\n")
+			fmt.Printf("Documentation:\n")
+			fmt.Printf("  https://github.com/ivikasavnish/easytunnel\n")
+			return
+		}
+	}
+
 	manager := NewTunnelManager()
 
 	// Create template for the web interface
@@ -1296,6 +1333,20 @@ func main() {
 		json.NewEncoder(w).Encode(response)
 	})
 
+	// Version endpoint
+	http.HandleFunc("/api/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		response := map[string]interface{}{
+			"version":     Version,
+			"build_time":  BuildTime,
+			"commit_hash": CommitHash,
+			"timestamp":   time.Now().UTC(),
+		}
+		json.NewEncoder(w).Encode(response)
+	})
+
 	// Manual network change trigger for testing
 	http.HandleFunc("/api/trigger-network-change", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -1428,11 +1479,19 @@ func main() {
 		port = envPort
 	}
 
-	log.Printf("🚇 Easy Tunnel Manager starting on port %s", port)
+	log.Printf("🚇 Easy Tunnel Manager v%s starting on port %s", Version, port)
 	log.Printf("📱 Open http://localhost:%s in your browser", port)
 	log.Printf("🔗 API endpoints available at http://localhost:%s/api/", port)
-	log.Printf("🔐 Remember to run with sudo for proper SSH permissions")
 	log.Printf("💾 Configurations saved to: %s", manager.configFile)
+	log.Printf("🔧 Build: %s (%s)", BuildTime, CommitHash)
+
+	// Check privileges and inform about port reclamation capabilities
+	if os.Geteuid() == 0 {
+		log.Printf("🔐 Running with root privileges - can forcefully reclaim ports if needed")
+	} else {
+		log.Printf("⚠️  Running without root privileges - may not be able to kill all processes using required ports")
+		log.Printf("💡 For full port management capabilities, run with: sudo %s", os.Args[0])
+	}
 
 	// Handle graceful shutdown
 	c := make(chan os.Signal, 1)
@@ -1643,4 +1702,337 @@ func ensureSSHAgentRunning() error {
 
 	log.Printf("Started ssh-agent")
 	return nil
+}
+
+// startStatusBroadcaster periodically broadcasts tunnel status updates
+func (tm *TunnelManager) startStatusBroadcaster(ctx context.Context) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+
+	// Track meaningful status changes only
+	type StatusSnapshot struct {
+		Name   string
+		Status string
+		Error  string
+		PID    int
+	}
+
+	var lastSnapshots []StatusSnapshot
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			status := tm.GetStatus()
+
+			// Create current snapshots (excluding dynamic fields like uptime)
+			currentSnapshots := make([]StatusSnapshot, len(status))
+			for i, s := range status {
+				currentSnapshots[i] = StatusSnapshot{
+					Name:   s.Config.Name,
+					Status: s.Status,
+					Error:  s.LastError,
+					PID:    s.PID,
+				}
+			}
+
+			// Only broadcast if meaningful status changed
+			hasChanged := false
+
+			// Check if number of tunnels changed
+			if len(currentSnapshots) != len(lastSnapshots) {
+				hasChanged = true
+			} else {
+				// Check if any tunnel status changed meaningfully
+				for i, current := range currentSnapshots {
+					if i >= len(lastSnapshots) {
+						hasChanged = true
+						break
+					}
+
+					last := lastSnapshots[i]
+					if current.Name != last.Name ||
+						current.Status != last.Status ||
+						current.Error != last.Error ||
+						current.PID != last.PID {
+						hasChanged = true
+						break
+					}
+				}
+			}
+
+			if hasChanged {
+				log.Printf("Broadcasting status update - meaningful changes detected")
+				tm.BroadcastSSE("status_update", status)
+				lastSnapshots = currentSnapshots
+			}
+		}
+	}
+}
+
+// Enhanced status checking to avoid false positives
+func (tm *TunnelManager) GetStatus() []TunnelStatus {
+	tm.mutex.RLock()
+	defer tm.mutex.RUnlock()
+
+	var statuses []TunnelStatus
+	for _, tunnel := range tm.tunnels {
+		tunnel.mutex.RLock()
+
+		// Only calculate uptime for truly connected tunnels
+		uptime := ""
+		if tunnel.status == "connected" && !tunnel.connectedAt.IsZero() {
+			// Ensure we've been connected for at least 5 seconds before showing uptime
+			connectedDuration := time.Since(tunnel.connectedAt)
+			if connectedDuration >= 5*time.Second {
+				uptime = connectedDuration.Round(time.Second).String()
+			}
+		}
+
+		pid := 0
+		if tunnel.cmd != nil && tunnel.cmd.Process != nil {
+			pid = tunnel.cmd.Process.Pid
+		}
+
+		lastHealthCheck := ""
+		if !tunnel.lastHealthCheck.IsZero() {
+			lastHealthCheck = tunnel.lastHealthCheck.Format("15:04:05")
+		}
+
+		status := TunnelStatus{
+			Config:          tunnel.config,
+			Status:          tunnel.status,
+			LastError:       tunnel.lastError,
+			ConnectedAt:     tunnel.connectedAt,
+			Uptime:          uptime,
+			PID:             pid,
+			LastHealthCheck: lastHealthCheck,
+		}
+		tunnel.mutex.RUnlock()
+		statuses = append(statuses, status)
+	}
+
+	return statuses
+}
+
+// Enhanced connection logic to prevent false connected states
+func (t *Tunnel) connect() bool {
+	t.mutex.Lock()
+
+	// Ensure port is available before attempting connection
+	if !isPortAvailable(t.config.LocalPort) {
+		log.Printf("Port %s is in use before connecting tunnel '%s', attempting to free it", t.config.LocalPort, t.config.Name)
+		if err := ensurePortAvailable(t.config.LocalPort); err != nil {
+			t.status = "error"
+			t.lastError = fmt.Sprintf("Failed to free port %s: %v", t.config.LocalPort, err)
+			t.mutex.Unlock()
+			return false
+		}
+	}
+
+	t.status = "connecting"
+	t.lastError = ""
+	t.mutex.Unlock()
+
+	log.Printf("Connecting tunnel '%s' on port %s", t.config.Name, t.config.LocalPort)
+
+	// Build SSH command with better options for tunneling
+	args, err := parseSSHCommand(t.config.Command)
+	if err != nil {
+		t.mutex.Lock()
+		t.status = "error"
+		t.lastError = fmt.Sprintf("Failed to parse command: %v", err)
+		t.mutex.Unlock()
+		return false
+	}
+
+	// Ensure the first argument is actually 'ssh'
+	if len(args) == 0 || !strings.Contains(args[0], "ssh") {
+		t.mutex.Lock()
+		t.status = "error"
+		t.lastError = "Command must start with 'ssh'"
+		t.mutex.Unlock()
+		return false
+	}
+
+	// Add additional SSH options for better tunneling
+	enhancedArgs := make([]string, 0, len(args)+10)
+	enhancedArgs = append(enhancedArgs, "ssh") // Always use 'ssh' as the command
+
+	// Add SSH options if not already present
+	cmdStr := strings.Join(args, " ")
+	if !strings.Contains(cmdStr, "-N") {
+		enhancedArgs = append(enhancedArgs, "-N") // No remote command
+	}
+	if !strings.Contains(cmdStr, "-T") {
+		enhancedArgs = append(enhancedArgs, "-T") // Disable pseudo-terminal
+	}
+	if !strings.Contains(cmdStr, "ServerAliveInterval") {
+		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveInterval=30")
+	}
+	if !strings.Contains(cmdStr, "ServerAliveCountMax") {
+		enhancedArgs = append(enhancedArgs, "-o", "ServerAliveCountMax=3")
+	}
+	if !strings.Contains(cmdStr, "ExitOnForwardFailure") {
+		enhancedArgs = append(enhancedArgs, "-o", "ExitOnForwardFailure=yes")
+	}
+	if !strings.Contains(cmdStr, "StrictHostKeyChecking") {
+		enhancedArgs = append(enhancedArgs, "-o", "StrictHostKeyChecking=no")
+	}
+	if !strings.Contains(cmdStr, "UserKnownHostsFile") {
+		enhancedArgs = append(enhancedArgs, "-o", "UserKnownHostsFile=/dev/null")
+	}
+	if !strings.Contains(cmdStr, "LogLevel") {
+		enhancedArgs = append(enhancedArgs, "-o", "LogLevel=ERROR") // Reduce verbosity
+	}
+
+	// Add the rest of the original arguments (skip the first 'ssh' argument)
+	if len(args) > 1 {
+		enhancedArgs = append(enhancedArgs, args[1:]...)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, enhancedArgs[0], enhancedArgs[1:]...)
+
+	// Capture stderr to see SSH errors
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	cmd.Stdout = nil
+
+	t.mutex.Lock()
+	t.cmd = cmd
+	t.mutex.Unlock()
+
+	log.Printf("Starting tunnel '%s' with command: %s", t.config.Name, strings.Join(enhancedArgs, " "))
+
+	// Start the SSH command
+	err = cmd.Start()
+	if err != nil {
+		t.mutex.Lock()
+		t.status = "error"
+		t.lastError = fmt.Sprintf("Failed to start SSH: %v", err)
+		t.mutex.Unlock()
+		return false
+	}
+
+	// Wait longer and check more thoroughly for tunnel establishment
+	connected := false
+	maxAttempts := 15 // Give up to 15 seconds
+
+	for i := 0; i < maxAttempts; i++ {
+		time.Sleep(1 * time.Second)
+
+		// Check if process is still running first
+		if cmd.Process == nil {
+			log.Printf("Tunnel '%s' process died during startup", t.config.Name)
+			break
+		}
+
+		// Then check if port is accessible
+		if t.isPortOpen() {
+			// Double-check by trying to connect
+			if t.verifyPortConnection() {
+				connected = true
+				log.Printf("Tunnel '%s' port verification successful after %d seconds", t.config.Name, i+1)
+				break
+			}
+		}
+
+		// Show progress for longer connections
+		if i > 5 && i%3 == 0 {
+			log.Printf("Tunnel '%s' still establishing connection... (%ds)", t.config.Name, i+1)
+		}
+	}
+
+	if connected {
+		t.mutex.Lock()
+		t.status = "connected"
+		t.connectedAt = time.Now()
+		t.lastError = ""
+		t.mutex.Unlock()
+
+		log.Printf("Tunnel '%s' connected successfully on port %s", t.config.Name, t.config.LocalPort)
+
+		// Wait for the command to finish
+		err = cmd.Wait()
+
+		t.mutex.Lock()
+		if err != nil {
+			stderrOutput := stderr.String()
+			if stderrOutput != "" {
+				t.lastError = fmt.Sprintf("SSH tunnel failed: %v - %s", err, stderrOutput)
+				log.Printf("Tunnel '%s' SSH stderr: %s", t.config.Name, stderrOutput)
+			} else {
+				t.lastError = fmt.Sprintf("SSH tunnel failed: %v", err)
+			}
+			t.status = "error"
+			log.Printf("Tunnel '%s' exited with error: %v", t.config.Name, err)
+		} else {
+			t.status = "disconnected"
+			t.lastError = ""
+			log.Printf("Tunnel '%s' exited normally", t.config.Name)
+		}
+		t.mutex.Unlock()
+		return true // Connection was established (even if it later failed)
+	} else {
+		// Connection failed to establish
+		t.mutex.Lock()
+
+		// Kill the process since it didn't establish properly
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+
+		stderrOutput := stderr.String()
+		if stderrOutput != "" {
+			t.lastError = fmt.Sprintf("Connection failed to establish: %s", stderrOutput)
+			log.Printf("Tunnel '%s' failed to establish - stderr: %s", t.config.Name, stderrOutput)
+		} else {
+			t.lastError = "Connection failed to establish within timeout"
+			log.Printf("Tunnel '%s' failed to establish within %d seconds", t.config.Name, maxAttempts)
+		}
+
+		t.status = "error"
+		t.mutex.Unlock()
+		return false
+	}
+}
+
+// Add a more thorough port verification method
+func (t *Tunnel) verifyPortConnection() bool {
+	// Try to actually connect and send/receive data
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", t.config.LocalPort), 2*time.Second)
+	if err != nil {
+		return false
+	}
+	defer conn.Close()
+
+	// Set a short deadline for the verification
+	conn.SetDeadline(time.Now().Add(1 * time.Second))
+
+	// The connection succeeded, which means something is listening
+	// For SSH tunnels, this is usually sufficient verification
+	return true
+}
+
+func (t *Tunnel) isPortOpen() bool {
+	// Try to connect to the local port
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("localhost:%s", t.config.LocalPort), 2*time.Second)
+	if err != nil {
+		// If connection failed, try alternative checks
+		// Check if something is listening on the port
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%s", t.config.LocalPort))
+		if err != nil {
+			// Port is in use (which is good - means SSH is using it)
+			return true
+		}
+		ln.Close()
+		// Port is available (which is bad - means SSH isn't using it)
+		return false
+	}
+	conn.Close()
+	return true
 }

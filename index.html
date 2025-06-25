@@ -82,6 +82,7 @@
         let tunnels = [];
         let lastNetworkState = true;
         let eventSource = null;
+        let tunnelStabilityTracker = {}; // Track tunnel connection stability
 
         // Request notification permission on load
         if ('Notification' in window) {
@@ -265,6 +266,52 @@
             }
         }
 
+        function isStableConnection(tunnelName, newStatus, uptime) {
+            const now = Date.now();
+            
+            // Initialize tracker for new tunnels
+            if (!tunnelStabilityTracker[tunnelName]) {
+                tunnelStabilityTracker[tunnelName] = {
+                    lastStatus: 'disconnected',
+                    lastStatusChange: now,
+                    consecutiveConnections: 0,
+                    lastNotificationTime: 0
+                };
+            }
+            
+            const tracker = tunnelStabilityTracker[tunnelName];
+            const timeSinceLastChange = now - tracker.lastStatusChange;
+            const timeSinceLastNotification = now - tracker.lastNotificationTime;
+            
+            // Update status change time if status changed
+            if (tracker.lastStatus !== newStatus) {
+                tracker.lastStatusChange = now;
+                tracker.lastStatus = newStatus;
+                
+                if (newStatus === 'connected') {
+                    tracker.consecutiveConnections++;
+                } else {
+                    tracker.consecutiveConnections = 0;
+                }
+            }
+            
+            // Only consider a connection stable if:
+            // 1. It's been connected for at least 10 seconds
+            // 2. It has uptime data (indicating a sustained connection)
+            // 3. We haven't shown a notification for this tunnel in the last 30 seconds
+            if (newStatus === 'connected') {
+                const hasUptime = uptime && uptime !== '';
+                const minStabilityTime = 10000; // 10 seconds
+                const minNotificationInterval = 30000; // 30 seconds
+                
+                return timeSinceLastChange >= minStabilityTime && 
+                       hasUptime && 
+                       timeSinceLastNotification >= minNotificationInterval;
+            }
+            
+            return true; // For non-connected statuses, always allow notifications
+        }
+
         function detectTunnelChanges(newTunnels) {
             if (tunnels.length === 0) {
                 // First load, don't show notifications
@@ -279,24 +326,51 @@
                     let notificationType = 'info';
                     let message = '';
                     
+                    // Check if this is a stable connection before notifying
+                    const shouldNotify = isStableConnection(
+                        newTunnel.config.name, 
+                        newTunnel.status, 
+                        newTunnel.uptime
+                    );
+                    
+                    if (!shouldNotify && newTunnel.status === 'connected') {
+                        console.log(`Suppressing unstable connection notification for ${newTunnel.config.name}`);
+                        return;
+                    }
+                    
                     switch (newTunnel.status) {
                         case 'connected':
-                            message = `Tunnel '${newTunnel.config.name}' connected successfully`;
-                            notificationType = 'success';
+                            // Only notify for stable connections
+                            if (shouldNotify) {
+                                message = `Tunnel '${newTunnel.config.name}' connected successfully`;
+                                notificationType = 'success';
+                                // Update the last notification time
+                                if (tunnelStabilityTracker[newTunnel.config.name]) {
+                                    tunnelStabilityTracker[newTunnel.config.name].lastNotificationTime = Date.now();
+                                }
+                            }
                             break;
                         case 'error':
                             message = `Tunnel '${newTunnel.config.name}' failed: ${newTunnel.lastError}`;
                             notificationType = 'error';
                             break;
                         case 'connecting':
-                            message = `Tunnel '${newTunnel.config.name}' is connecting...`;
+                            // Only show connecting notification if transitioning from error or disconnected
+                            if (oldTunnel.status === 'error' || oldTunnel.status === 'disconnected') {
+                                message = `Tunnel '${newTunnel.config.name}' is connecting...`;
+                            }
                             break;
                         case 'disconnected':
-                            message = `Tunnel '${newTunnel.config.name}' disconnected`;
+                            // Only show disconnect notification if it was previously connected for a while
+                            if (oldTunnel.status === 'connected' && oldTunnel.uptime) {
+                                message = `Tunnel '${newTunnel.config.name}' disconnected`;
+                                notificationType = 'warning';
+                            }
                             break;
                     }
                     
                     if (message) {
+                        console.log(`Showing tunnel notification: ${message}`);
                         showSystemNotification('Tunnel Status Changed', message, notificationType);
                     }
                 }

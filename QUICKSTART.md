@@ -47,11 +47,21 @@ You're now seeing this pattern (which is much better):
 
 ## 📖 **Basic Usage**
 
-### Step 1: Start the Application
+### Step 1: Start the Application (Recommended: with sudo)
 ```bash
 cd easytunnel
+
+# Recommended: Run with sudo for automatic port management
+sudo go run .
+
+# Alternative: Run without sudo (limited port management)
 go run .
 ```
+
+**Why sudo?** 🚀 **Automatic port reclamation** - kills processes using required ports
+- ✅ No more "port already in use" errors
+- ✅ Automatic cleanup of stuck SSH processes  
+- ✅ Full process management capabilities
 
 ### Step 2: Open Web Interface
 - Open http://localhost:8080 in your browser
@@ -90,11 +100,17 @@ ssh user@bastion.example.com
 # Build and run
 go mod tidy && go run .
 
+# Run with automatic port management (recommended)
+sudo go run .
+
 # Run on different port
-PORT=9999 go run .
+PORT=9999 sudo go run .
 
 # Emergency cleanup (if stuck)
-pkill -f "go run" && pkill -f "ssh.*-L" && sleep 5
+sudo pkill -f "go run" && sudo pkill -f "ssh.*-L" && sleep 5
+
+# Manual port cleanup (if not using sudo)
+sudo lsof -ti :5433,8080 | xargs sudo kill -9
 
 # Check what's using a port
 lsof -i :8080

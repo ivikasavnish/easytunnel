@@ -1,6 +1,39 @@
 # Easy SSH Tunnel Manager
 
-A modern web-based SSH tunnel manager that allows you to manage multiple SSH tunnels with automatic reconnection, real-time monitoring, and a beautiful web interface.
+A modern web-based SSH ### Option 2: Custom Port
+
+```bash
+PORT=9999 go run .
+# or
+PORT=9999 ./tunnel-manager
+```
+
+### Option 3: Running with sudo (Recommended)
+
+For full port management capabilities, including automatic port reclamation:
+
+```bash
+sudo PORT=10000 go run .
+# or
+sudo ./tunnel-manager
+```
+
+**Why sudo?** 
+- ✅ **Automatic Port Reclamation**: Can kill processes using required ports
+- ✅ **Full SSH Key Access**: Can access SSH keys in all user directories  
+- ✅ **Process Management**: Can manage tunnel processes with full privileges
+- ⚠️ **Security**: Only run with sudo in trusted environments
+
+**Without sudo:**
+- ⚠️ Limited ability to reclaim ports used by other processes
+- ⚠️ May need manual port cleanup: `lsof -i :PORT` and `kill PID`
+
+## 📖 Usage Guide
+
+### Adding Tunnels
+
+1. **Open the web interface** at http://localhost:10000 (or your custom port)
+2. **Fill out the form:**allows you to manage multiple SSH tunnels with automatic reconnection, real-time monitoring, and a beautiful web interface.
 
 ![Easy SSH Tunnel Manager](https://img.shields.io/badge/Go-v1.21+-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Status](https://img.shields.io/badge/Status-Active-brightgreen)
 
@@ -240,13 +273,67 @@ This happens when:
 - `Host key verification failed` - SSH host key issues
 - `AllowTcpForwarding no` - Server doesn't allow port forwarding
 
-#### 3. **Port Already in Use**
-**Error:** `bind: address already in use`
+#### 3. **Port Already in Use / Port Conflicts** 🚀 **AUTOMATIC RESOLUTION**
 
-**Solutions:**
-- Check what's using the port: `lsof -i :5432`
-- Kill the process: `sudo kill -9 <PID>`
-- Use a different local port in your SSH command
+**Error:** `bind: address already in use` or tunnel fails to start
+
+**🤖 AUTOMATIC SOLUTION (when running with sudo):**
+Easy Tunnel Manager automatically detects and resolves port conflicts when running with sudo privileges:
+
+```bash
+# Run with sudo for automatic port reclamation
+sudo ./easytunnel
+```
+
+**What happens automatically:**
+1. 🔍 **Detects** processes using required ports
+2. 📋 **Logs** detailed information about conflicting processes  
+3. ⚠️ **Terminates** conflicting processes gracefully (SIGTERM)
+4. 💀 **Force kills** stubborn processes if needed (SIGKILL)
+5. ✅ **Verifies** port is free and proceeds with tunnel
+
+**Example automatic resolution:**
+```
+2025/06/24 Port 5433 is in use. Process info:
+COMMAND  PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+ssh     1234 user    3u  IPv4  12345      0t0  TCP *:5433 (LISTEN)
+Found 1 process(es) using port 5433: [1234]
+Sent TERM signal to PID 1234
+Successfully freed port 5433
+```
+
+**🔧 MANUAL SOLUTION (if not using sudo):**
+```bash
+# Check what's using the port
+lsof -i :5433
+
+# Kill the specific process
+sudo kill -9 <PID>
+
+# Or kill all SSH tunnels using that port  
+sudo pkill -f "ssh.*-L.*5433"
+
+# Verify port is free
+lsof -i :5433
+```
+
+**⚡ BULK PORT CLEANUP:**
+```bash
+# Clean up common tunnel ports
+for port in 5432 5433 3306 6379 8080; do
+    echo "Checking port $port..."
+    if lsof -i :$port >/dev/null 2>&1; then
+        echo "  Killing processes on port $port"
+        sudo lsof -ti :$port | xargs sudo kill -9
+    fi
+done
+```
+
+**💡 PREVENTION:**
+- Always run with sudo: `sudo ./easytunnel`
+- Use unique ports for each tunnel
+- Stop tunnels cleanly before reconfiguring
+- Monitor the web interface for port conflicts
 
 #### 4. **SSH Connection Failed**
 **Error:** Various SSH authentication or connection errors
